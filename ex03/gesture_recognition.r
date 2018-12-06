@@ -1,91 +1,104 @@
 library(caret)
 library(doParallel)
+library(oce)
+library(signal)
 registerDoParallel(6)
+
+setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 
 filePath <- "./wear_data/raw_data_wear_%s.csv"
 
-# todo: use vector commands
-#files <- c(sprintf(filePath, "x"), filePath, "y"), filePath, "z"))
-#d <- lapply(files, read.table, sep=',', fill = T, col.names = c('gesture', 'person', 'sample', paste('acc', 1:1000, sep='')))
-#summary(d[1])
+# Because the sample with the most accelerometer features has 424 accel. values, read 500 accel values
+xAccel <- read.table(sprintf(filePath, "x"), sep=',', fill = T, col.names = c('gesture', 'person', 'sample', paste('acc', 1:500, sep='')))
+yAccel <- read.table(sprintf(filePath, "y"), sep=',', fill = T, col.names = c('gesture', 'person', 'sample', paste('acc', 1:500, sep='')))
+zAccel <- read.table(sprintf(filePath, "z"), sep=',', fill = T, col.names = c('gesture', 'person', 'sample', paste('acc', 1:500, sep='')))
 
-x <- read.table(sprintf(filePath, "x"), sep=',', fill = T, col.names = c('gesture', 'person', 'sample', paste('acc', 1:1000, sep='')))
-y <- read.table(sprintf(filePath, "y"), sep=',', fill = T, col.names = c('gesture', 'person', 'sample', paste('acc', 1:1000, sep='')))
-z <- read.table(sprintf(filePath, "z"), sep=',', fill = T, col.names = c('gesture', 'person', 'sample', paste('acc', 1:1000, sep='')))
+interpolateAccelData <- function(accelData, numberOfValues){
+  stepwidth <- 1/numberOfValues
+  
+  newAccelData <- accelData[,1:3]
+  
+  newAccelData[,4:(numberOfValues+3)] <- t(apply(accelData[,-(1:3)], 1, function(row){
+    rowClean <- row[!is.na(row)]
+    approx(x = seq(0,1,1/(length(rowClean)-1)), y = rowClean, xout = seq(0,1-stepwidth,stepwidth))$y
+  }))
 
-# todo: use vector commands for interpolation, the for loops are quiet slow
-
-stepwidth <- 0.001 # we want 1000 values
-
-for (i in 1:length(x[,1])){
-  x1 <- x[i, -(1:3)][!is.na(x[i, -(1:3)])]
-  x[i, -(1:3)] <- approx(x = seq(0,1,1/(length(x1)-1)), y = x1, xout = seq(0,1-stepwidth,stepwidth))$y
+  newAccelData
 }
 
-for (i in 1:length(y[,1])){
-  y1 <- y[i, -(1:3)][!is.na(y[i, -(1:3)])]
-  y[i, -(1:3)] <- approx(x = seq(0,1,1/(length(y1)-1)), y = y1, xout = seq(0,1-stepwidth,stepwidth))$y
-}
-
-for (i in 1:length(z[,1])){
-  z1 <- z[i, -(1:3)][!is.na(z[i, -(1:3)])]
-  z[i, -(1:3)] <- approx(x = seq(0,1,1/(length(z1)-1)), y = z1, xout = seq(0,1-stepwidth,stepwidth))$y
-}
+xAccel <- interpolateAccelData(xAccel, numberOfValues = 30)
+yAccel <- interpolateAccelData(yAccel, numberOfValues = 30)
+zAccel <- interpolateAccelData(zAccel, numberOfValues = 30)
 
 # combine x, y and z acceleration into one dataframe
-xyz <- x[,1:3]
-xyz[4:1003] <- x[, -(1:3)]
-xyz[1004:2003] <- y[, -(1:3)]
-xyz[2004:3003] <- z[, -(1:3)]
+nOtherCols <- ncol(xAccel[, 1:3])
+nAccelCols <- ncol(xAccel[, -(1:3)])
+xyzAccel <- xAccel[,1:3]
+xyzAccel[(0*nAccelCols+nOtherCols+1):(1*nAccelCols+nOtherCols)] <- xAccel[, -(1:3)]
+xyzAccel[(1*nAccelCols+nOtherCols+1):(2*nAccelCols+nOtherCols)] <- yAccel[, -(1:3)]
+xyzAccel[(2*nAccelCols+nOtherCols+1):(3*nAccelCols+nOtherCols)] <- zAccel[, -(1:3)]
 
-rm(x, y, z, x1, y1, z1, i, stepwidth, filePath) # clean environment
+rm(xAccel, yAccel, zAccel, nOtherCols, nAccelCols, filePath, interpolateAccelData) # clean environment
 
 # save/load for later use
-saveRDS(object = xyz, file = 'xyz_raw_interpolated_data.RData')
-xyz <- readRDS('xyz_raw_interpolated_data.RData')
+saveRDS(object = xyzAccel, file = 'xyzAccel_raw_interpolated_data_30.RData')
+xyzAccel <- readRDS('xyzAccel_raw_interpolated_data_30.RData')
 
-xyz[, -(1:3)] <- scale(xyz[, -(1:3)])
+plot(as.numeric(xyzAccel[1,-(1:3)]), type='l', ylim=c(-6,6), ylab="acceleration [G]", xlab="featureNr - concat(X | Y | Z)", main="acceleration values of 3 samples", sub="(30 feature values per axis)")
+lines(as.numeric(xyzAccel[2,-(1:3)]), col=2)
+lines(as.numeric(xyzAccel[3,-(1:3)]), col=3)
+legend(75, 6, legend=c(as.character(xyzAccel[1,1]), as.character(xyzAccel[2,1]), as.character(xyzAccel[3,1])), col=c(1, 2, 3),  lty=1)
 
-#running median of each row (i think this is like a low pass)
-library(signal)
+# Lowpass Filter
+#----------------
+# apply lowpass filter on each axis
+# not needed because we only used a very low numbers of values for the interpolation
+#
+# filterLength <- 101 #adjust to length
+# xyzAccelFiltered = xyzAccel[,1:3]
+# xyzAccelFiltered[,4:503] <- t(apply(xyzAccel[,4:503], 1, function(v){
+#   lowpass(v, n=filterLength)
+# }))
+# xyzAccelFiltered[,504:1003] <- t(apply(xyzAccel[,504:1003], 1, function(v){
+#   lowpass(v, n=filterLength)
+# }))
+# xyzAccelFiltered[,1004:1503] <- t(apply(xyzAccel[,1004:1503], 1, function(v){
+#   lowpass(v, n=filterLength)
+# }))
 
-test <- apply(xyz[,4:3003], 1, function(x1){
-  lowpass(x1, k=201)
-})
 
+# balance check
+table(xyzAccel$gesture)
+hist(as.numeric(xyzAccel$gesture)) # balanced with 270 each
 
-# plot first and second row of dataset with the 'low pass'
-plot((as.numeric(xyz[1,-(1:3)])), type='l')
-par(new=TRUE)
-plot((as.numeric(test[,1])), type='l', col=3)
-par(new=TRUE)
-plot((as.numeric(xyz[2,-(1:3)])), type='l', col=2)
-par(new=TRUE)
-plot((as.numeric(test[,2])), type='l', col=4)
+# concatinated gesture plot
+matplot(t(subset(xyzAccel, gesture == "up")[,-(1:3)]), type="l", col=rgb(0, 0, 0, 0.1), ylab="acceleration [G]", xlab="featureNr - concat(X | Y | Z)", main="up")
+matplot(t(subset(xyzAccel, gesture == "down")[,-(1:3)]), type="l", col=rgb(0, 0, 0, 0.1), ylab="acceleration [G]", xlab="featureNr - concat(X | Y | Z)", main="down")
+matplot(t(subset(xyzAccel, gesture == "left")[,-(1:3)]), type="l", col=rgb(0, 0, 0, 0.1), ylab="acceleration [G]", xlab="featureNr - concat(X | Y | Z)", main="left")
 
-plot(test[,1], type='l', col=2)
 
 # calculate mean of all 'up' and 'down' movements and plot it
-# this should give an idea of how the averate up/down movement looks like
-plot(4:3003, numeric(3000), type='l')
-xyz_means_up <- colMeans(xyz[xyz$gesture == "up", ][,-(1:3)])
-lines(xyz_means_up, col=3)
-xyz_means_down <- colMeans(xyz[xyz$gesture == "down", ][,-(1:3)])
-lines(xyz_means_down, col=2)
+# this should give an idea of how the average up/down movement looks like
+xyzAccel_means_up <- colMeans(subset(xyzAccel, gesture == "up")[,-(1:3)])
+xyzAccel_means_down <- colMeans(subset(xyzAccel, gesture == "down")[,-(1:3)])
+xyzAccel_means_left <- colMeans(subset(xyzAccel, gesture == "left")[,-(1:3)])
+plot(xyzAccel_means_up, type='l', col=1, ylim=c(-4,7), ylab="mean acceleration [G]", xlab="featureNr - concat(X | Y | Z)", main="comparison of mean acceleration of 3 gestures")
+lines(xyzAccel_means_down, col=2)
+lines(xyzAccel_means_left, col=3)
+legend(-1, -1.7, legend=c("up", "down", "left"), col=c(1, 2, 3),  lty=1)
 
 
 set.seed(12345) # make it reproducible
 # use a training set with ONLY 30% of the data to speed up training, INCREASE FOR FINAL TRAINING!
-indexes_train <- createDataPartition(xyz$gesture, p = 0.3, list = F) 
-indexes_test <- (1:nrow(xyz))[-indexes_train]
+indexes_train <- createDataPartition(xyzAccel$gesture, p = 0.7, list = F) 
+indexes_test <- (1:nrow(xyzAccel))[-indexes_train]
 
-training <- xyz[indexes_train,]
-testing <- xyz[indexes_test,]
+training <- xyzAccel[indexes_train,]
+testing <- xyzAccel[indexes_test,]
 
-# train a knn model with pca preprocessing with all 3000 values just to get a baseline of what accuracy is possible without feature exraction
 trControl <- trainControl(method = 'repeatedcv', 
-                          number = 5, 
-                          repeats = 2, 
+                          number = 10, #USE 10 FOR FINAL TRAINING!
+                          repeats = 20, #USE 20 FOR FINAL TRAINING!
                           returnData = F, 
                           classProbs = T, 
                           returnResamp = 'final', 
@@ -93,25 +106,142 @@ trControl <- trainControl(method = 'repeatedcv',
                           preProcOptions = list(thresh = 0.99))
 
 models <- list()
-models$modelKnn <- train(x = training[,-(1:3)], 
-                         y = training$gesture, 
-                         preProcess = c('pca'), 
-                         method = 'knn', 
-                         tuneGrid = expand.grid(k=1:5), 
-                         metric = 'Kappa', 
-                         trControl = trControl)
 
-models$modelKnn$preProcess # PCA needed 85 components to capture 99 percent of the variance
-models$modelKnn # Accuracy 0.9211654
-plot(models$modelKnn) # best Kappa with k=1
+#------------------------
+# Train KNN model
+#------------------------
+trainKnn <- function(data){
+  train(x = data[,-(1:3)],
+        y = data$gesture,
+        preProcess = NULL,
+        method = 'knn', 
+        tuneGrid = expand.grid(k=1:5),
+        metric = 'Kappa',
+        trControl = trControl)
+}
+
+models$modelKnn <- trainKnn(training)
+
+models$modelKnn
+plot(models$modelKnn)
+
+
+#------------------------
+# Train KNN model with PCA
+#------------------------
+trainKnnPca <- function(data){
+  train(x = data[,-(1:3)],
+        y = data$gesture,
+        preProcess = c('pca'), 
+        method = 'knn', 
+        tuneGrid = expand.grid(k=1:5),
+        metric = 'Kappa',
+        trControl = trControl)
+}
+
+models$modelKnnPca <- trainKnnPca(training)
+
+models$modelKnnPca$preProcess
+models$modelKnnPca
+plot(models$modelKnnPca)
+
+
+#------------------------
+# Train LDA model
+#------------------------
+trainLda <- function(data){
+  train(x = data[,-(1:3)],
+        y = data$gesture,
+        preProcess = NULL, 
+        method = 'lda', 
+        tuneGrid = NULL,
+        metric = 'Kappa',
+        trControl = trControl)
+}
+
+models$modelLda <- trainLda(training)
+
+models$modelLda$preProcess
+models$modelLda
+
+
+#------------------------
+# Train LDA model with PCA
+#------------------------
+trainLdaPca <- function(data){
+  train(x = data[,-(1:3)],
+        y = data$gesture,
+        preProcess = c('pca'), 
+        method = 'lda', 
+        tuneGrid = NULL,
+        metric = 'Kappa',
+        trControl = trControl)
+}
+
+models$modelLdaPca <- trainLdaPca(training)
+
+models$modelLdaPca$preProcess
+models$modelLdaPca
+
+
+#------------------------
+# Train Random Forest model
+#------------------------
+trainRf <- function(data){
+  train(x = data[,-(1:3)],
+        y = data$gesture,
+        preProcess = NULL, 
+        method = 'rf', 
+        tuneGrid = expand.grid(mtry = 3**(0:5)),
+        metric = 'Kappa',
+        trControl = trControl)
+}
+
+models$modelRf <- trainRf(training)
+
+models$modelRf
+plot(models$modelRf)
+
+
+#------------------------
+# Train Random Forest model with PCA
+#------------------------
+trainRfPca <- function(data){
+  train(x = data[,-(1:3)],
+        y = data$gesture,
+        preProcess = c('pca'), 
+        method = 'rf', 
+        tuneGrid = expand.grid(mtry = 3**(0:5)),
+        metric = 'Kappa',
+        trControl = trControl)
+}
+
+models$modelRfPca <- trainRfPca(training)
+
+models$modelRfPca$preProcess
+models$modelRfPca
+plot(models$modelRfPca)
+
+
+saveRDS(object = models, file = 'all_models.RData')
+models <- readRDS('all_models.RData')
+
+# Compare models
+results <- resamples(models)
+summary(results)
+bwplot(results)
+
+
+# details of KNN with PCA
+#-------------------------
 
 #confusion matrix
-cvConfMatrix <- confusionMatrix(models$modelKnn)
+cvConfMatrix <- confusionMatrix(models$modelKnnPca)
 cvConfMatrix
 levelplot(sweep(x = cvConfMatrix$table, STATS = colSums(cvConfMatrix$table), MARGIN = 2, FUN = '/'), col.regions=gray(100:0/100))
 
 #test with test data set
-testPredicted <- predict(models$modelKnn, newdata = testing[,-(1:3)])
+testPredicted <- predict(models$modelKnnPca, newdata = testing[,-(1:3)])
 testConfMatrix <- confusionMatrix(data = testPredicted, reference = testing$gesture)
-testConfMatrix
+testConfMatrix # Accuracy : 0.9738
 levelplot(sweep(x = testConfMatrix$table, STATS = colSums(testConfMatrix$table), MARGIN = 2, FUN = '/'), col.regions=gray(100:0/100))
